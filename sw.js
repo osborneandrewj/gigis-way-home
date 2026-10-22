@@ -1,7 +1,7 @@
 /* Offline cache for GiGi's Way Home. Relative URLs keep GitHub project pages working.
    Navigations (the game itself) are network-first so an iPad home-screen copy
    picks up a new index.html. Icons and the manifest stay cache-first. */
-const CACHE = 'gigi-way-home-v2';
+const CACHE = 'gigi-way-home-v3';
 const ASSETS = [
   './index.html',
   './manifest.json',
