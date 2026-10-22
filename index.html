@@ -48,8 +48,8 @@
     top: 0;
     width: 100%;
     height: 100%;
+    image-rendering: -moz-crisp-edges;
     image-rendering: pixelated;
-    image-rendering: crisp-edges;
   }
   #c { z-index: 1; touch-action: none; }
   #ov { z-index: 3; pointer-events: none; }
@@ -58,8 +58,12 @@
     z-index: 2;
     pointer-events: none;
     image-rendering: auto;
+    transform-origin: 50% 100%;
     -webkit-user-drag: none;
     user-select: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #gigi { transform: none !important; }
   }
   #live {
     position: absolute;
@@ -113,6 +117,97 @@ const oc = ov.getContext('2d');
 c.imageSmoothingEnabled = false;
 oc.imageSmoothingEnabled = false;
 
+let frameNow = 0;
+let pixelSnap = 1;
+const reduceMotionMq = window.matchMedia('(prefers-reduced-motion: reduce)');
+let reduceMotion = reduceMotionMq.matches;
+if (reduceMotionMq.addEventListener) reduceMotionMq.addEventListener('change', function () { reduceMotion = reduceMotionMq.matches; });
+else if (reduceMotionMq.addListener) reduceMotionMq.addListener(function () { reduceMotion = reduceMotionMq.matches; });
+
+const textCache = new Map();
+const textScratch = document.createElement('canvas');
+const textCtx = textScratch.getContext('2d', { willReadFrequently: true });
+textScratch.width = 8;
+textScratch.height = 8;
+
+function fontPx(font) {
+  const m = /(\d+(?:\.\d+)?)px/.exec(font || '');
+  return m ? parseFloat(m[1]) : 8;
+}
+
+function parseFill(style) {
+  if (!style) return [255, 255, 255];
+  if (style.charAt(0) === '#') {
+    let h = style.slice(1);
+    if (h.length === 3) h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+    return [parseInt(h.slice(0, 2), 16) || 0, parseInt(h.slice(2, 4), 16) || 0, parseInt(h.slice(4, 6), 16) || 0];
+  }
+  const m = /rgba?\(([^)]+)\)/.exec(style);
+  if (!m) return [255, 255, 255];
+  const p = m[1].split(',');
+  return [parseFloat(p[0]) || 0, parseFloat(p[1]) || 0, parseFloat(p[2]) || 0];
+}
+
+function crispGlyph(font, fill, str) {
+  const key = font + '\n' + fill + '\n' + str;
+  const hit = textCache.get(key);
+  if (hit) return hit;
+  textCtx.font = font;
+  const metrics = textCtx.measureText(str);
+  const ascent = Math.max(1, Math.ceil(metrics.actualBoundingBoxAscent || fontPx(font) * 0.82));
+  const descent = Math.max(1, Math.ceil(metrics.actualBoundingBoxDescent || 2));
+  const pad = 1;
+  const w = Math.max(1, Math.ceil(metrics.width) + pad + 1);
+  const h = Math.max(1, ascent + descent + 1);
+  if (textScratch.width < w || textScratch.height < h) {
+    textScratch.width = Math.max(textScratch.width, w);
+    textScratch.height = Math.max(textScratch.height, h);
+  }
+  textCtx.clearRect(0, 0, w, h);
+  textCtx.font = font;
+  textCtx.textBaseline = 'alphabetic';
+  textCtx.fillStyle = fill;
+  textCtx.fillText(str, pad, ascent);
+  const img = textCtx.getImageData(0, 0, w, h);
+  const rgb = parseFill(textCtx.fillStyle);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] >= 128) {
+      d[i] = rgb[0];
+      d[i + 1] = rgb[1];
+      d[i + 2] = rgb[2];
+      d[i + 3] = 255;
+    } else {
+      d[i + 3] = 0;
+    }
+  }
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  out.getContext('2d').putImageData(img, 0, 0);
+  const glyph = { canvas: out, w: w, h: h, ascent: ascent, pad: pad };
+  textCache.set(key, glyph);
+  if (textCache.size > 320) textCache.delete(textCache.keys().next().value);
+  return glyph;
+}
+
+function installCrispText(ctx) {
+  if (ctx.__crisp) return;
+  ctx.__crisp = true;
+  ctx.fillText = function (text, x, y) {
+    const str = text == null ? '' : String(text);
+    if (!str) return;
+    const font = ctx.font || '8px monospace';
+    const fill = typeof ctx.fillStyle === 'string' ? ctx.fillStyle : '#fff';
+    const glyph = crispGlyph(font, fill, str);
+    const prev = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(glyph.canvas, Math.round(x) - glyph.pad, Math.round(y - glyph.ascent));
+    ctx.imageSmoothingEnabled = prev;
+  };
+}
+installCrispText(c);
+
 const R = (x, y, w, h, col) => { c.fillStyle = col; c.fillRect(x | 0, y | 0, w | 0, h | 0); };
 const C = (cx, cy, r, col) => {
   c.fillStyle = col;
@@ -162,7 +257,6 @@ let timeRelief = 0;
 let away = false;
 let frozenByAway = false;
 let praiseHold = null;
-let speechPrimed = false;
 let parentOverride = false;
 let parentPick = false;
 
@@ -341,49 +435,6 @@ function sfxFanfare() {
   tone(784, 0.28, 'triangle', 0.04, t + 0.38);
 }
 
-let speakTimer = null;
-
-function fillUtterance(text) {
-  const u = new SpeechSynthesisUtterance(text);
-  u.rate = 0.92;
-  u.pitch = 1.18;
-  u.lang = 'en-US';
-  return u;
-}
-
-// iOS drops speak() that starts in a timer. The Start tap has to speak
-// synchronously, in the gesture, before any later line is queued.
-function speakSync(text) {
-  speechPrimed = true;
-  if (!window.speechSynthesis) return;
-  const muted = !!(S && S.settings.mute);
-  const line = muted ? 'Hi' : (text || 'Hi Carlie!');
-  try {
-    const u = fillUtterance(line);
-    if (muted) u.volume = 0;
-    window.speechSynthesis.speak(u);
-  } catch (e) { /* ignore */ }
-}
-
-function speakNow(text) {
-  if (!started || !text || !S || S.settings.mute || !window.speechSynthesis) return;
-  if (!speechPrimed) {
-    speakSync(text);
-    return;
-  }
-  if (speakTimer) clearTimeout(speakTimer);
-  try { window.speechSynthesis.cancel(); } catch (e) { /* ignore */ }
-  speakTimer = setTimeout(() => {
-    try { window.speechSynthesis.speak(fillUtterance(text)); } catch (e) { /* ignore */ }
-  }, 60);
-}
-
-setInterval(() => {
-  try {
-    if (started && window.speechSynthesis && window.speechSynthesis.speaking) window.speechSynthesis.resume();
-  } catch (e) { /* ignore */ }
-}, 4000);
-
 function bg() {
   for (let y = 0; y < 200; y++) R(0, y, 320, 1, 'rgb(' + ((14 + y / 12) | 0) + ',' + ((12 + y / 14) | 0) + ',' + ((40 + y / 6) | 0) + ')');
   let s = 3;
@@ -415,11 +466,27 @@ function bubble(x, y, w, lines) {
   lines.forEach((l, i) => c.fillText(l, x + 4, y + 10 + i * 10));
 }
 
+function promptsTap() {
+  return screen === 'play' && phase === 'play' && frameNow >= lockUntil;
+}
+
+function drawPulse(x, y, w, h) {
+  const wave = reduceMotion ? 0.62 : (0.4 + 0.6 * (0.5 + 0.5 * Math.sin(frameNow / 450)));
+  c.save();
+  c.globalAlpha = wave;
+  R(x - 1, y - 1, w + 2, 1, '#ffe56a');
+  R(x - 1, y + h, w + 2, 1, '#ffe56a');
+  R(x - 1, y, 1, h, '#ffe56a');
+  R(x + w, y, 1, h, '#ffe56a');
+  c.restore();
+}
+
 function tile(x, y, w, h, text, font, opt) {
   opt = opt || {};
   const down = !!opt.down;
   const dim = !!opt.dim;
   const dy = down ? 1 : 0;
+  if (opt.pulse && promptsTap() && !dim) drawPulse(x, y, w, h);
   const edge = dim ? '#221c3a' : (opt.on ? '#ffff55' : '#000055');
   const fill = dim ? '#1a1430' : (opt.good ? '#0d7a32' : (down ? '#222288' : '#3333bb'));
   R(x, y + dy, w, h, edge);
@@ -466,6 +533,14 @@ function placeGigi(gx, gy, mood, h) {
   gigiEl.style.top = (gy * k) + 'px';
   gigiEl.style.height = (h * k) + 'px';
   gigiEl.style.width = (h * GIGI_AR[mood] * k) + 'px';
+  if (reduceMotion) {
+    gigiEl.style.transform = 'none';
+    return;
+  }
+  const wave = Math.sin(frameNow / 3600 * Math.PI * 2);
+  const scaleY = 1 + wave * 0.03;
+  const bob = wave * 1.5 * k;
+  gigiEl.style.transform = 'translateY(' + bob.toFixed(2) + 'px) scaleY(' + scaleY.toFixed(4) + ')';
 }
 
 function hideGigi() { gigiEl.style.display = 'none'; }
@@ -1024,7 +1099,6 @@ function onLevelClear(silent) {
   const line = level === 6
     ? 'Great job, Carlie! The sock stepped aside. You sewed the last patch onto GiGi!'
     : 'Great job, Carlie! You sewed a new patch onto GiGi!';
-  if (!silent) speakNow(line);
   setLive(line);
   persist();
   return line;
@@ -1043,13 +1117,11 @@ function afterPraise() {
     if (bonusSolved >= 6) {
       screen = 'finale';
       sfxFanfare();
-      speakNow('Home at last, Carlie! GiGi is safe on the porch.');
       setLive('Home at last, Carlie!');
       persist();
       return;
     }
     startProblem(false);
-    speakNow(problem.speech);
     return;
   }
   if (masteryMet()) {
@@ -1059,14 +1131,13 @@ function afterPraise() {
       timeRelief = 0;
       pass = 'timed';
       startProblem(false);
-      speakNow('Now with the timer. ' + problem.speech);
+      setLive('Now with the timer. ' + problem.speech);
       return;
     }
     onLevelClear();
     return;
   }
   startProblem(false);
-  speakNow(problem.speech);
 }
 
 function onCorrect() {
@@ -1111,7 +1182,6 @@ function onMiss(reason) {
     sfxYawn();
   } else sfxBad();
   const h = hintFor(problem, problem.misses >= 2);
-  speakNow(h.speech);
   setLive(h.speech);
   persist();
 }
@@ -1135,13 +1205,11 @@ function gotoLevel(i) {
     pass = 'untimed';
     screen = 'boss';
     problem = null;
-    speakNow('A grumpy sock is blocking the gate home.');
     setLive('A grumpy sock blocks the gate.');
     persist();
     return;
   }
   startProblem(true);
-  speakNow(problem.speech);
 }
 
 function openParent() {
@@ -1225,7 +1293,6 @@ function activate(btn) {
   if (btn.id === 'mute-on') { S.settings.mute = false; persist(); return; }
   if (btn.id === 'mute-off') {
     S.settings.mute = true;
-    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) { /* ignore */ }
     persist();
     return;
   }
@@ -1248,7 +1315,6 @@ function activate(btn) {
   if (btn.id === 'next') {
     if (level >= 6) {
       screen = 'cert';
-      speakNow('This certificate is for you, Carlie.');
       setLive('Certificate for Carlie.');
       persist();
       return;
@@ -1258,14 +1324,13 @@ function activate(btn) {
   }
   if (btn.id === 'face') {
     startProblem(true);
-    speakNow(problem.speech);
     return;
   }
   if (btn.id === 'bonus') { gotoLevel(7); return; }
   if (btn.id === 'replay') { gotoLevel(0); return; }
   if (btn.id === 'tocert') {
     screen = 'cert';
-    speakNow('This certificate is for you, Carlie.');
+    setLive('This certificate is for you, Carlie.');
     persist();
     return;
   }
@@ -1276,7 +1341,7 @@ function activate(btn) {
     limitMs = 0;
     frozenRemain = null;
     startTime = performance.now();
-    speakNow(problem.speech);
+    setLive(problem.speech);
     return;
   }
   if (screen !== 'play' || phase !== 'play') return;
@@ -1424,7 +1489,6 @@ function beginFromTitle() {
   unlockAudio();
   sfxStart();
   const resume = S.resume;
-  let line = 'Hi Carlie!';
   if (resume && resume.screen === 'cert' && S.cleared[6]) {
     screen = 'cert';
     setLive('Hi Carlie! Your certificate is ready.');
@@ -1438,7 +1502,6 @@ function beginFromTitle() {
     screen = 'clear';
     const correct = history.filter(Boolean).length;
     shownStars = S.stars[level] || (correct >= 9 ? 3 : 2);
-    line = 'Hi Carlie! Great job!';
     setLive('Hi Carlie! Level clear.');
   } else if (resume && resume.screen === 'boss' && ((S.unlocked | 0) > 6 || resume.parentPick)) {
     level = 6;
@@ -1449,18 +1512,16 @@ function beginFromTitle() {
     timeRelief = 0;
     pass = 'untimed';
     screen = 'boss';
-    line = 'Hi Carlie! A grumpy sock is blocking the gate.';
-    setLive('A grumpy sock blocks the gate.');
+    setLive('Hi Carlie! A grumpy sock is blocking the gate.');
   } else if (resume && Number.isInteger(resume.level)) {
-    line = 'Hi Carlie! ' + resumePlay(resume);
+    setLive('Hi Carlie! ' + resumePlay(resume));
   } else {
     level = Math.max(0, (S.unlocked | 0) - 1);
     if (S.cleared[level] && level < 6) level = 0;
     level = clampLevel(level);
     startProblem(true);
-    line = 'Hi Carlie! ' + problem.speech;
+    setLive('Hi Carlie! ' + problem.speech);
   }
-  speakSync(line);
 }
 
 function drawFloorNote(text, color) {
@@ -1477,7 +1538,7 @@ function drawPad(now) {
     const y = 52 + ((i / 3) | 0) * 28;
     const id = key === 'bk' ? 'bk' : key === 'ok' ? 'ok' : 'd:' + key;
     const label = key === 'ok' ? 'OK' : (key === 'bk' ? '' : key);
-    tile(x, y, 42, 24, label, key === 'ok' ? 'bold 12px' : 'bold 16px', { id: id, down: pressedId === id });
+    tile(x, y, 42, 24, label, key === 'ok' ? 'bold 12px' : 'bold 16px', { id: id, down: pressedId === id, pulse: true });
     if (key === 'bk') drawBackspace(x, y, pressedId === id);
   }
   drawEquation(now);
@@ -1571,6 +1632,7 @@ function renderPlay(now) {
       tile(160 + i * 46, 138, 40, 28, String(n), 'bold 18px', {
         id: id,
         down: pressedId === id,
+        pulse: true,
         good: phase === 'praise' && n === problem.answer
       });
     });
@@ -1823,8 +1885,14 @@ function renderConfirm() {
 }
 
 function render(now) {
+  frameNow = now;
   buttons = [];
   c = cv.getContext('2d');
+  installCrispText(c);
+  c.imageSmoothingEnabled = false;
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  oc.setTransform(1, 0, 0, 1, 0, 0);
+  oc.imageSmoothingEnabled = false;
   if (screen !== 'clear' && screen !== 'finale') oc.clearRect(0, 0, 320, 200);
   bg();
   if (screen === 'parent') {
@@ -1948,17 +2016,25 @@ document.addEventListener('keydown', (e) => {
 });
 
 function fit() {
+  const dpr = window.devicePixelRatio || 1;
   const w = document.body.clientWidth || window.innerWidth;
   const h = document.body.clientHeight || window.innerHeight;
-  const scale = Math.min(w / 320, h / 200);
-  const cw = Math.max(320, Math.floor(320 * scale));
-  const ch = Math.max(200, Math.floor(200 * scale));
-  stage.style.width = cw + 'px';
-  stage.style.height = ch + 'px';
-  cv.style.width = cw + 'px';
-  cv.style.height = ch + 'px';
-  ov.style.width = cw + 'px';
-  ov.style.height = ch + 'px';
+  let pix = Math.floor(Math.min((w * dpr) / 320, (h * dpr) / 200));
+  if (pix < 1) pix = 1;
+  pixelSnap = pix;
+  const cssW = (320 * pix) / dpr;
+  const cssH = (200 * pix) / dpr;
+  stage.style.width = cssW + 'px';
+  stage.style.height = cssH + 'px';
+  stage.style.transform = 'none';
+  cv.style.width = cssW + 'px';
+  cv.style.height = cssH + 'px';
+  ov.style.width = cssW + 'px';
+  ov.style.height = cssH + 'px';
+  const rect = stage.getBoundingClientRect();
+  const dx = Math.round(rect.left * dpr) / dpr - rect.left;
+  const dy = Math.round(rect.top * dpr) / dpr - rect.top;
+  if (dx || dy) stage.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
 }
 
 window.addEventListener('resize', onViewport);
