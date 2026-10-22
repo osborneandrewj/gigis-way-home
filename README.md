@@ -10,7 +10,7 @@ A subtraction game for Carlie (Singapore Math, 1st grade, up to 40). One self-co
 4. Branch: **main**. Folder: **/ (root)**. Save.
 5. Wait for the Pages site to finish, then open the URL GitHub shows (for this repo it will look like `https://osborneandrewj.github.io/gigis-way-home/`).
 
-The game does not load anything from the network. After one online visit, the service worker keeps the files on the iPad.
+The game does not load anything from the network while she is playing. The home-screen copy asks the network first for a new version, waits a couple of seconds, and opens the saved copy if the iPad is offline. Icons stay saved on the iPad.
 
 ## Add it to the iPad home screen
 
@@ -24,6 +24,6 @@ Turn the iPad sideways. Tap anywhere on the title screen (it says hi to Carlie) 
 
 ## For a parent
 
-Long-press the blue bar at the top, or tap the top-left corner five times. From there you can slow down or speed up the timer, mute speech and sounds, jump to a level, or reset patches and stars. Timer and mute stay put when you reset progress.
+Long-press the blue bar at the top for about two seconds, or tap the top-left corner five times. From there you can slow down or speed up the timer, mute speech and sounds, jump to a level she has unlocked, or reset patches and stars. ALL LEVELS opens every level, including ones she has not reached. Timer and mute stay put when you reset progress.
 
-A level is cleared when **8 of the last 10** problems are right on the **first try**, before GiGi falls asleep. A miss shows a hint and does not cost a life. Level 1 has no timer. Later levels start with one untimed warm-up, then about 20 seconds, shrinking toward 8 seconds as she gets them right.
+A level is cleared when **8 of the last 10** problems are right on the **first try**, before GiGi falls asleep. A miss shows a hint and does not cost a life. Level 1 has no timer and clears on that 8-of-10 window. Each later level, including the sock, starts with an untimed warm-up pass. When 8 of the last 10 are right, that pass ends, her last-10 window resets, and the same kind of problems come back on a timer (about 20 seconds, shrinking toward 8, a little longer after a timeout). The patch is sewn only on the timed pass.

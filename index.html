@@ -157,6 +157,14 @@ let pressTimer = null;
 let cornerTaps = [];
 let lockUntil = 0;
 let lastActId = '';
+let pass = 'untimed';
+let timeRelief = 0;
+let away = false;
+let frozenByAway = false;
+let praiseHold = null;
+let speechPrimed = false;
+let parentOverride = false;
+let parentPick = false;
 
 function randint(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
@@ -202,17 +210,39 @@ function loadSave() {
   }
 }
 
+function snapshotProblem(p) {
+  if (!p) return null;
+  return {
+    a: p.a,
+    b: p.b,
+    kind: p.kind,
+    recorded: !!p.recorded,
+    wasTimed: !!p.wasTimed,
+    misses: p.misses || 0,
+    lines: p.lines ? p.lines.slice() : null,
+    speech: p.speech || '',
+    choices: p.choices ? p.choices.slice() : null
+  };
+}
+
 function persist() {
   if (screen === 'title' || screen === 'parent' || screen === 'confirm') {
     S.resume = S.resume || null;
   } else {
+    const named = (screen === 'clear' || screen === 'cert' || screen === 'finale' || screen === 'boss' || screen === 'hint');
     S.resume = {
       level: level,
       history: history.slice(),
       problemsDone: problemsDone,
       speedCorrect: speedCorrect,
       bonusSolved: bonusSolved,
-      screen: (screen === 'clear' || screen === 'cert' || screen === 'finale' || screen === 'boss') ? screen : 'play'
+      pass: pass,
+      timeRelief: timeRelief,
+      parentPick: parentPick,
+      entry: entry,
+      missReason: missReason,
+      problem: snapshotProblem(problem),
+      screen: named ? screen : 'play'
     };
   }
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* private mode */ }
@@ -229,12 +259,20 @@ function setLive(text) {
   if (live) live.textContent = text || '';
 }
 
+function resumeAudio() {
+  if (!actx || actx.state === 'running') return;
+  try {
+    const pending = actx.resume();
+    if (pending && pending.catch) pending.catch(() => {});
+  } catch (e) { /* audio optional */ }
+}
+
 function unlockAudio() {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return;
   try {
     if (!actx) actx = new AC();
-    if (actx.state === 'suspended') actx.resume();
+    resumeAudio();
     const buf = actx.createBuffer(1, 1, 22050);
     const src = actx.createBufferSource();
     src.buffer = buf;
@@ -304,18 +342,39 @@ function sfxFanfare() {
 }
 
 let speakTimer = null;
+
+function fillUtterance(text) {
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 0.92;
+  u.pitch = 1.18;
+  u.lang = 'en-US';
+  return u;
+}
+
+// iOS drops speak() that starts in a timer. The Start tap has to speak
+// synchronously, in the gesture, before any later line is queued.
+function speakSync(text) {
+  speechPrimed = true;
+  if (!window.speechSynthesis) return;
+  const muted = !!(S && S.settings.mute);
+  const line = muted ? 'Hi' : (text || 'Hi Carlie!');
+  try {
+    const u = fillUtterance(line);
+    if (muted) u.volume = 0;
+    window.speechSynthesis.speak(u);
+  } catch (e) { /* ignore */ }
+}
+
 function speakNow(text) {
   if (!started || !text || !S || S.settings.mute || !window.speechSynthesis) return;
+  if (!speechPrimed) {
+    speakSync(text);
+    return;
+  }
   if (speakTimer) clearTimeout(speakTimer);
   try { window.speechSynthesis.cancel(); } catch (e) { /* ignore */ }
   speakTimer = setTimeout(() => {
-    try {
-      const u = new SpeechSynthesisUtterance(text);
-      u.rate = 0.92;
-      u.pitch = 1.18;
-      u.lang = 'en-US';
-      window.speechSynthesis.speak(u);
-    } catch (e) { /* ignore */ }
+    try { window.speechSynthesis.speak(fillUtterance(text)); } catch (e) { /* ignore */ }
   }, 60);
 }
 
@@ -359,20 +418,21 @@ function bubble(x, y, w, lines) {
 function tile(x, y, w, h, text, font, opt) {
   opt = opt || {};
   const down = !!opt.down;
+  const dim = !!opt.dim;
   const dy = down ? 1 : 0;
-  const edge = opt.on ? '#ffff55' : '#000055';
-  const fill = opt.good ? '#0d7a32' : (down ? '#222288' : '#3333bb');
+  const edge = dim ? '#221c3a' : (opt.on ? '#ffff55' : '#000055');
+  const fill = dim ? '#1a1430' : (opt.good ? '#0d7a32' : (down ? '#222288' : '#3333bb'));
   R(x, y + dy, w, h, edge);
   R(x + 1, y + 1 + dy, w - 2, h - 2, fill);
-  if (!down) R(x + 1, y + 1, w - 2, 2, opt.good ? '#b8e89a' : '#6666ff');
+  if (!down && !dim) R(x + 1, y + 1, w - 2, 2, opt.good ? '#b8e89a' : '#6666ff');
   c.font = (font || 'bold 16px') + ' monospace';
-  c.fillStyle = '#fff';
+  c.fillStyle = dim ? '#665588' : '#fff';
   const m = c.measureText(text);
   const ascent = m.actualBoundingBoxAscent || 10;
   const descent = m.actualBoundingBoxDescent || 2;
   const baseline = y + dy + (h + ascent - descent) / 2;
   c.fillText(text, x + (w - m.width) / 2, baseline);
-  if (opt.id) buttons.push({ x: x, y: y, w: w, h: h, id: opt.id, label: text });
+  if (opt.id && !dim) buttons.push({ x: x, y: y, w: w, h: h, id: opt.id, label: text });
 }
 
 function drawPatches(glow) {
@@ -797,7 +857,7 @@ function rollGen(fn, fallback) {
     if (accept(p)) return p;
   }
   lastKey = fallback.key;
-  return fallback;
+  return baseProblem(fallback.a, fallback.b, fallback.kind);
 }
 
 function makeProblem(levelIndex) {
@@ -872,16 +932,39 @@ function statusLeft() {
   if (screen === 'clear') name += ' CLEAR!';
   else if (screen === 'play' || screen === 'hint') {
     if (limitMs > 0 && phase === 'play' && screen === 'play') name += '  (TIMED)';
-    else if (level > 0 && level < 7 && problemsDone === 0 && screen === 'play') name += '  WARM-UP';
+    else if (level > 0 && level < 7 && pass !== 'timed') name += '  WARM-UP';
   }
   return name;
 }
 
-function computeLimit() {
-  if (level === 0 || level === 7) return 0;
-  if (problemsDone === 0) return 0;
+function needsTimedPass() {
+  return level >= 1 && level <= 6;
+}
+
+function limitSeconds() {
+  if (level === 0 || level === 7 || pass !== 'timed') return 0;
   const base = Math.max(8, 20 - speedCorrect * 1.5);
-  return base * (S.settings.mult || 1) * 1000;
+  return base * (S.settings.mult || 1) + timeRelief;
+}
+
+function computeLimit() {
+  return limitSeconds() * 1000;
+}
+
+function maxPlayable() {
+  return Math.max(0, Math.min(7, (S.unlocked | 0) - 1));
+}
+
+function clampLevel(i, picked) {
+  i = i | 0;
+  if (picked && i >= 0 && i <= 7) return i;
+  if (i < 0) return 0;
+  const max = maxPlayable();
+  return i > max ? max : i;
+}
+
+function levelOpen(i) {
+  return (i | 0) < (S.unlocked | 0);
 }
 
 function remainMs(now) {
@@ -901,6 +984,8 @@ function startProblem(fresh) {
     history = [];
     problemsDone = 0;
     speedCorrect = 0;
+    timeRelief = 0;
+    pass = 'untimed';
     if (level === 7) bonusSolved = 0;
   }
   problem = makeProblem(level);
@@ -914,11 +999,12 @@ function startProblem(fresh) {
   problem.wasTimed = limitMs > 0;
   startTime = performance.now();
   frozenRemain = null;
+  frozenByAway = false;
   setLive(problem.speech);
   persist();
 }
 
-function onLevelClear() {
+function onLevelClear(silent) {
   const correct = history.filter(Boolean).length;
   const stars = correct >= 9 ? 3 : 2;
   shownStars = stars;
@@ -933,19 +1019,26 @@ function onLevelClear() {
   }
   screen = 'clear';
   phase = 'play';
+  parentPick = false;
   sfxFanfare();
   const line = level === 6
     ? 'Great job, Carlie! The sock stepped aside. You sewed the last patch onto GiGi!'
     : 'Great job, Carlie! You sewed a new patch onto GiGi!';
-  speakNow(line);
+  if (!silent) speakNow(line);
   setLive(line);
   persist();
+  return line;
+}
+
+function masteryMet() {
+  return history.length >= 10 && history.filter(Boolean).length >= 8;
 }
 
 function afterPraise() {
   if (phase !== 'praise') return;
   phase = 'play';
   praiseUntil = 0;
+  praiseHold = null;
   if (level === 7) {
     if (bonusSolved >= 6) {
       screen = 'finale';
@@ -959,8 +1052,16 @@ function afterPraise() {
     speakNow(problem.speech);
     return;
   }
-  const correct = history.filter(Boolean).length;
-  if (history.length >= 10 && correct >= 8) {
+  if (masteryMet()) {
+    if (needsTimedPass() && pass !== 'timed') {
+      history = [];
+      speedCorrect = 0;
+      timeRelief = 0;
+      pass = 'timed';
+      startProblem(false);
+      speakNow('Now with the timer. ' + problem.speech);
+      return;
+    }
     onLevelClear();
     return;
   }
@@ -973,7 +1074,10 @@ function onCorrect() {
   if (!problem.recorded) {
     problem.recorded = true;
     if (level !== 7) {
-      if (problem.wasTimed) speedCorrect++;
+      if (problem.wasTimed) {
+        speedCorrect++;
+        if (timeRelief > 0) timeRelief--;
+      }
       history.push(true);
       if (history.length > 10) history.shift();
     }
@@ -1000,9 +1104,12 @@ function onMiss(reason) {
   entry = '';
   screen = 'hint';
   frozenRemain = null;
+  frozenByAway = false;
   limitMs = 0;
-  if (reason === 'timeout') sfxYawn();
-  else sfxBad();
+  if (reason === 'timeout') {
+    timeRelief = Math.min(8, timeRelief + 3);
+    sfxYawn();
+  } else sfxBad();
   const h = hintFor(problem, problem.misses >= 2);
   speakNow(h.speech);
   setLive(h.speech);
@@ -1019,10 +1126,13 @@ function submitEntry() {
 function gotoLevel(i) {
   level = i;
   frozenRemain = null;
+  frozenByAway = false;
   if (i === 6) {
     history = [];
     problemsDone = 0;
     speedCorrect = 0;
+    timeRelief = 0;
+    pass = 'untimed';
     screen = 'boss';
     problem = null;
     speakNow('A grumpy sock is blocking the gate home.');
@@ -1038,7 +1148,9 @@ function openParent() {
   if (screen === 'parent' || screen === 'confirm') return;
   if (screen === 'play' && phase === 'play' && limitMs > 0 && frozenRemain == null) {
     frozenRemain = Math.max(0, limitMs - (performance.now() - startTime));
+    frozenByAway = false;
   }
+  parentOverride = false;
   prevScreen = screen;
   screen = 'parent';
   sfxTap();
@@ -1046,12 +1158,22 @@ function openParent() {
 
 function closeParent() {
   screen = prevScreen || 'title';
+  parentOverride = false;
+  if (away) {
+    if (screen === 'play' && phase === 'play' && limitMs > 0 && frozenRemain != null) frozenByAway = true;
+    else {
+      frozenRemain = null;
+      frozenByAway = false;
+    }
+    return;
+  }
   if (screen === 'play' && phase === 'play' && limitMs > 0 && frozenRemain != null) {
     startTime = performance.now() - (limitMs - frozenRemain);
     frozenRemain = null;
   } else if (screen !== 'play') {
     frozenRemain = null;
   }
+  frozenByAway = false;
 }
 
 function resetProgress() {
@@ -1063,9 +1185,16 @@ function resetProgress() {
   problemsDone = 0;
   speedCorrect = 0;
   bonusSolved = 0;
+  timeRelief = 0;
+  pass = 'untimed';
   problem = null;
+  entry = '';
   screen = 'title';
   phase = 'play';
+  frozenRemain = null;
+  frozenByAway = false;
+  parentOverride = false;
+  parentPick = false;
   S.resume = null;
   persist();
 }
@@ -1073,9 +1202,12 @@ function resetProgress() {
 function activate(btn) {
   if (!btn) return;
   const now = performance.now();
-  if (btn.id === lastActId && now < lockUntil) return;
-  lastActId = btn.id;
-  lockUntil = now + 220;
+  const isDigit = btn.id.indexOf('d:') === 0;
+  if (!isDigit && btn.id === lastActId && now < lockUntil) return;
+  if (!isDigit) {
+    lastActId = btn.id;
+    lockUntil = now + 220;
+  }
   if (btn.id !== 'start') sfxTap();
   if (btn.id === 'start') {
     beginFromTitle();
@@ -1097,11 +1229,20 @@ function activate(btn) {
     persist();
     return;
   }
+  if (btn.id === 'override') {
+    parentOverride = !parentOverride;
+    return;
+  }
   if (btn.id.indexOf('lv:') === 0) {
+    const i = parseInt(btn.id.slice(3), 10);
+    if (!levelOpen(i) && !parentOverride) return;
     screen = 'play';
     prevScreen = 'play';
     frozenRemain = null;
-    gotoLevel(parseInt(btn.id.slice(3), 10));
+    frozenByAway = false;
+    parentOverride = false;
+    parentPick = !levelOpen(i);
+    gotoLevel(i);
     return;
   }
   if (btn.id === 'next') {
@@ -1160,55 +1301,166 @@ function activate(btn) {
   }
 }
 
+function boolHistory(list) {
+  if (!Array.isArray(list)) return [];
+  return list.filter((v) => v === true || v === false).slice(-10);
+}
+
+function restoreProblem(snap) {
+  if (!snap || typeof snap !== 'object') return null;
+  const a = snap.a | 0;
+  const b = snap.b | 0;
+  const kinds = ['take', 'bond', 'noregroup', 'from10', 'bridge', 'place', 'regroup'];
+  if (a < 0 || a > 40 || b < 0 || b > a) return null;
+  const kind = kinds.indexOf(snap.kind) >= 0 ? snap.kind : 'take';
+  const p = baseProblem(a, b, kind);
+  p.recorded = !!snap.recorded;
+  p.wasTimed = !!snap.wasTimed;
+  p.misses = Math.max(0, snap.misses | 0);
+  const lines = Array.isArray(snap.lines) ? snap.lines.map(String).slice(0, 4) : null;
+  const speech = typeof snap.speech === 'string' ? snap.speech : '';
+  const choices = Array.isArray(snap.choices) ? snap.choices.map((n) => n | 0).slice(0, 3) : null;
+  if (!lines || !lines.length || !speech || (kind === 'take' && (!choices || choices.length < 3))) decorate(p);
+  else {
+    p.lines = lines;
+    p.speech = speech;
+    if (choices) p.choices = choices;
+  }
+  return p;
+}
+
+function applyResumeStats(resume) {
+  history = boolHistory(resume.history);
+  problemsDone = Math.max(0, resume.problemsDone | 0);
+  speedCorrect = Math.max(0, resume.speedCorrect | 0);
+  bonusSolved = Math.max(0, resume.bonusSolved | 0);
+  timeRelief = Math.max(0, Math.min(8, resume.timeRelief | 0));
+  pass = resume.pass === 'timed' && needsTimedPass() ? 'timed' : 'untimed';
+}
+
+function resumePlay(resume) {
+  const wanted = resume.level | 0;
+  const picked = !!resume.parentPick;
+  level = clampLevel(wanted, picked);
+  parentPick = picked && level === wanted;
+  if (level !== wanted) {
+    parentPick = false;
+    startProblem(true);
+    return problem.speech;
+  }
+  applyResumeStats(resume);
+  const restored = restoreProblem(resume.problem);
+  if (!restored) {
+    if ((resume.screen === 'play' || resume.screen === 'hint') && level !== 7) {
+      history.push(false);
+      if (history.length > 10) history.shift();
+    }
+    startProblem(false);
+    return problem.speech;
+  }
+  problem = restored;
+  entry = '';
+  phase = 'play';
+  lastTickSec = -1;
+  frozenRemain = null;
+  frozenByAway = false;
+  if (resume.screen !== 'hint' && problem.recorded) {
+    if (level === 7 && bonusSolved >= 6) {
+      screen = 'finale';
+      sfxFanfare();
+      setLive('Home at last, Carlie!');
+      persist();
+      return 'GiGi is home.';
+    }
+    if (level !== 7 && masteryMet()) {
+      if (needsTimedPass() && pass !== 'timed') {
+        history = [];
+        speedCorrect = 0;
+        timeRelief = 0;
+        pass = 'timed';
+        startProblem(false);
+        return problem.speech;
+      }
+      return onLevelClear(true);
+    }
+    startProblem(false);
+    return problem.speech;
+  }
+  if (resume.screen === 'hint' || (problem.recorded && resume.screen === 'hint')) {
+    if (!problem.recorded && level !== 7) {
+      problem.recorded = true;
+      history.push(false);
+      if (history.length > 10) history.shift();
+      problem.misses = (problem.misses || 0) + 1;
+    }
+    missReason = resume.missReason === 'timeout' ? 'timeout' : (resume.missReason || '');
+    screen = 'hint';
+    limitMs = 0;
+    startTime = performance.now();
+    const hint = hintFor(problem, problem.misses >= 2);
+    setLive(hint.speech);
+    persist();
+    return hint.speech;
+  }
+  const savedEntry = typeof resume.entry === 'string' ? resume.entry.replace(/\D/g, '').slice(0, 2) : '';
+  entry = savedEntry;
+  missReason = '';
+  screen = 'play';
+  limitMs = computeLimit();
+  problem.wasTimed = limitMs > 0;
+  startTime = performance.now();
+  setLive(problem.speech);
+  persist();
+  return problem.speech;
+}
+
+function clearResumeOk(resume) {
+  const i = resume.level | 0;
+  return i >= 0 && i < 8 && i < (S.unlocked | 0) && !!S.cleared[i];
+}
+
 function beginFromTitle() {
   started = true;
   unlockAudio();
   sfxStart();
   const resume = S.resume;
+  let line = 'Hi Carlie!';
   if (resume && resume.screen === 'cert' && S.cleared[6]) {
     screen = 'cert';
-    speakNow('Hi Carlie!');
     setLive('Hi Carlie! Your certificate is ready.');
-    return;
-  }
-  if (resume && resume.screen === 'finale') {
+  } else if (resume && resume.screen === 'finale') {
     screen = 'finale';
-    speakNow('Hi Carlie!');
     setLive('Hi Carlie! GiGi is home.');
-    return;
-  }
-  if (resume && resume.screen === 'clear') {
+  } else if (resume && resume.screen === 'clear' && clearResumeOk(resume)) {
     level = resume.level | 0;
-    history = (resume.history || []).slice();
+    history = boolHistory(resume.history);
+    pass = resume.pass === 'timed' ? 'timed' : 'untimed';
     screen = 'clear';
-    speakNow('Hi Carlie! Great job!');
+    const correct = history.filter(Boolean).length;
+    shownStars = S.stars[level] || (correct >= 9 ? 3 : 2);
+    line = 'Hi Carlie! Great job!';
     setLive('Hi Carlie! Level clear.');
-    return;
-  }
-  if (resume && resume.screen === 'boss') {
+  } else if (resume && resume.screen === 'boss' && ((S.unlocked | 0) > 6 || resume.parentPick)) {
     level = 6;
+    parentPick = !!resume.parentPick;
     history = [];
     problemsDone = 0;
     speedCorrect = 0;
+    timeRelief = 0;
+    pass = 'untimed';
     screen = 'boss';
-    speakNow('Hi Carlie! A grumpy sock is blocking the gate.');
+    line = 'Hi Carlie! A grumpy sock is blocking the gate.';
     setLive('A grumpy sock blocks the gate.');
-    return;
+  } else if (resume && Number.isInteger(resume.level)) {
+    line = 'Hi Carlie! ' + resumePlay(resume);
+  } else {
+    level = Math.max(0, (S.unlocked | 0) - 1);
+    if (S.cleared[level] && level < 6) level = 0;
+    level = clampLevel(level);
+    startProblem(true);
+    line = 'Hi Carlie! ' + problem.speech;
   }
-  if (resume && Number.isInteger(resume.level)) {
-    level = resume.level;
-    history = (resume.history || []).slice();
-    problemsDone = resume.problemsDone | 0;
-    speedCorrect = resume.speedCorrect | 0;
-    bonusSolved = resume.bonusSolved | 0;
-    startProblem(false);
-    speakNow('Hi Carlie! ' + problem.speech);
-    return;
-  }
-  level = Math.max(0, (S.unlocked | 0) - 1);
-  if (S.cleared[level] && level < 6) level = 0;
-  startProblem(true);
-  speakNow('Hi Carlie! ' + problem.speech);
+  speakSync(line);
 }
 
 function drawFloorNote(text, color) {
@@ -1517,7 +1769,7 @@ function renderParentFull() {
   c.fillText('PARENT MENU', 12, 30);
   c.font = '8px monospace';
   c.fillStyle = '#aaaaff';
-  c.fillText('8 of the last 10, first try, on time.', 12, 44);
+  c.fillText('Warm-up, then 8 of 10 on time.', 12, 44);
   c.fillStyle = '#fff';
   c.font = '8px monospace';
   c.fillText('TIMER', 12, 60);
@@ -1535,14 +1787,21 @@ function renderParentFull() {
   c.font = '8px monospace';
   c.fillStyle = '#fff';
   c.fillText('LEVEL', 12, 146);
+  tile(198, 130, 110, 18, parentOverride ? 'ALL ON' : 'ALL LEVELS', 'bold 8px', {
+    id: 'override',
+    on: parentOverride,
+    down: pressedId === 'override'
+  });
   const labels = ['1', '2', '3', '4', '5', '6', 'BOSS', 'BONUS'];
   labels.forEach((label, i) => {
     const col = i % 4;
     const row = (i / 4) | 0;
+    const open = levelOpen(i) || parentOverride;
     const id = 'lv:' + i;
     tile(12 + col * 76, 152 + row * 24, 70, 22, label, label.length > 2 ? 'bold 10px' : 'bold 14px', {
-      id: id,
-      on: prevScreen !== 'title' && level === i,
+      id: open ? id : '',
+      dim: !open,
+      on: open && prevScreen !== 'title' && level === i,
       down: pressedId === id
     });
   });
@@ -1612,6 +1871,7 @@ function canvasPos(e) {
 
 cv.addEventListener('pointerdown', (e) => {
   e.preventDefault();
+  resumeAudio();
   try { cv.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
   const p = canvasPos(e);
   const btn = hitButton(p.x, p.y);
@@ -1624,11 +1884,12 @@ cv.addEventListener('pointerdown', (e) => {
       press.long = true;
       pressedId = null;
       openParent();
-    }, 650);
+    }, 2000);
   }
 });
 
 function endPress(e) {
+  resumeAudio();
   if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
   if (!press) return;
   const wasLong = press.long;
@@ -1700,11 +1961,60 @@ function fit() {
   ov.style.height = ch + 'px';
 }
 
-window.addEventListener('resize', fit);
-window.addEventListener('orientationchange', fit);
+window.addEventListener('resize', onViewport);
+window.addEventListener('orientationchange', onViewport);
+document.addEventListener('visibilitychange', onViewport);
+if (window.matchMedia) {
+  const orientMq = window.matchMedia('(orientation: portrait)');
+  if (orientMq.addEventListener) orientMq.addEventListener('change', syncAway);
+  else if (orientMq.addListener) orientMq.addListener(syncAway);
+}
+
+function clockShouldPause() {
+  if (document.hidden) return true;
+  if (window.matchMedia && window.matchMedia('(orientation: portrait)').matches) return true;
+  return window.innerHeight > window.innerWidth;
+}
+
+function pauseAway() {
+  if (away) return;
+  away = true;
+  if (phase === 'praise' && praiseHold == null) praiseHold = Math.max(0, praiseUntil - performance.now());
+  if (screen === 'play' && phase === 'play' && limitMs > 0 && frozenRemain == null) {
+    frozenRemain = Math.max(0, limitMs - (performance.now() - startTime));
+    frozenByAway = true;
+  }
+}
+
+function resumeAway() {
+  if (!away) return;
+  away = false;
+  if (praiseHold != null) {
+    praiseUntil = performance.now() + praiseHold;
+    praiseHold = null;
+  }
+  const parentOpen = screen === 'parent' || screen === 'confirm';
+  if (!parentOpen && frozenByAway && screen === 'play' && phase === 'play' && limitMs > 0 && frozenRemain != null) {
+    startTime = performance.now() - (limitMs - frozenRemain);
+    frozenRemain = null;
+  }
+  frozenByAway = false;
+  resumeAudio();
+}
+
+function syncAway() {
+  if (clockShouldPause()) pauseAway();
+  else resumeAway();
+}
+
+function onViewport() {
+  fit();
+  syncAway();
+}
 
 function loop(now) {
-  if (screen === 'play' && phase === 'play' && limitMs > 0 && frozenRemain == null) {
+  syncAway();
+  if (screen === 'play' && phase === 'play' && limitMs > 0 && frozenRemain == null && !away) {
     const left = limitMs - (now - startTime);
     const sec = Math.ceil(left / 1000);
     if (left <= 5000 && sec > 0 && sec !== lastTickSec) {
@@ -1713,7 +2023,7 @@ function loop(now) {
     }
     if (left <= 0) onMiss('timeout');
   }
-  if (phase === 'praise' && now >= praiseUntil) afterPraise();
+  if (phase === 'praise' && praiseHold == null && !away && now >= praiseUntil) afterPraise();
   render(now);
   if (!window.__ready) window.__ready = true;
   requestAnimationFrame(loop);
@@ -1780,7 +2090,12 @@ if (TEST) {
         bonusSolved: bonusSolved,
         limitMs: limitMs,
         remain: limitMs > 0 ? remainMs(now) : null,
-        baseSeconds: (level === 0 || level === 7 || problemsDone === 0) ? 0 : Math.max(8, 20 - speedCorrect * 1.5),
+        baseSeconds: limitSeconds(),
+        pass: pass,
+        timeRelief: timeRelief,
+        away: away,
+        audio: actx ? actx.state : null,
+        parentOverride: parentOverride,
         mult: S.settings.mult,
         mute: S.settings.mute,
         cleared: S.cleared.slice(),
@@ -1798,6 +2113,22 @@ if (TEST) {
     checkGenerators: checkGenerators,
     expire() {
       if (limitMs > 0 && screen === 'play') startTime = performance.now() - limitMs - 5;
+    },
+    suspendAudio() {
+      if (!actx) unlockAudio();
+      if (actx && actx.suspend) return actx.suspend();
+      return null;
+    },
+    forceFallback() {
+      const saved = lastKey;
+      const p = rollGen(() => null, FALLBACKS[2]);
+      const q = rollGen(() => null, FALLBACKS[2]);
+      decorate(p);
+      decorate(q);
+      p.lines[0] = 'MUTATED';
+      const ok = p !== q && p !== FALLBACKS[2] && q !== FALLBACKS[2] && !FALLBACKS[2].lines && q.lines[0] !== 'MUTATED';
+      lastKey = saved;
+      return ok;
     }
   };
 }
